@@ -419,102 +419,6 @@ class RefManager(object):
 		bibtex_status = document.calculate_document_status()
 		return bibtex_status
 
-	def mendeley_search(self, title):
-		results = self.session.catalog.search(title)
-		max_iter = 10
-		index = 0
-		self.selected_document.records.clear()
-		for doc in results.iter():
-			index += 1
-			result = self._get_mendeley_record(doc)
-			if result['similarity'] == 1:
-				if 'bibtex' in result:
-					self.selected_document.bibtex_status = 'unconfirmed'
-			self.selected_document.records.append(result)
-			if index >= max_iter:
-				break
-		self.calculate_document_status()
-
-	def calculate_document_status(self):
-		# if there is a confirmed record or a 100% match, we do nothing
-		if self.selected_document.bibtex_status not in ['unconfirmed', 'confirmed']:
-			# if there are any records at all
-			if len(self.selected_document.records) > 0:
-				# did any records have bibtex and high similarity? Maybe just a mispelled title
-				if any(['bibtex' in rec and rec['similarity'] > .9 for rec in self.selected_document.records]):
-					self.selected_document.bibtex_status = 'mispell'
-				else:
-					self.selected_document.bibtex_status = 'no matches'
-			else:
-				self.selected_document.bibtex_status = 'no records'
-		self.update_document_in_listbox()
-
-	def get_similarity_score(self, res_title):
-		res_title = res_title.lower()
-		cur_title = self.selected_document.title.lower()
-		res_title = ''.join(e for e in res_title if e.isalnum())
-		cur_title = ''.join(e for e in cur_title if e.isalnum())
-		similarity = lev.ratio(res_title, cur_title)
-		return similarity
-
-	def google_search(self, title):
-		results = query(title)
-		self.selected_document.records.clear()
-		for doc in results:
-			result = self._get_google_record(doc)
-			if result['similarity'] == 1:
-				if 'bibtex' in result:
-					self.selected_document.bibtex_status = 'unconfirmed'
-			self.selected_document.records.append(result)
-		self.calculate_document_status()
-
-	def _get_google_record(self, result):
-		results_dict = bibtex_to_dict(result)
-		similarity = self.get_similarity_score(results_dict['title'])
-		results_dict['similarity'] = similarity
-		results_dict['bibtex'] = result
-		return results_dict
-
-	def _get_mendeley_record(self, result):
-		field_names = ['title', 'authors', 'identifiers', 'keywords', 'link', 'source', 'year']
-		max_field_len = max([len(field_name) for field_name in field_names])
-		results_dict = dict()
-		results_string = ''
-
-		# set to lower case and remove special characters
-		similarity = self.get_similarity_score(result.title)
-
-		for i in range(len(field_names)):
-			field_name = field_names[i]
-			field_value = getattr(result, field_name)
-			if field_name == 'authors':
-				field_value = self.get_authors_pretty(field_value)
-			padding = (max_field_len - len(field_name)) * ' '
-			results_dict[field_name] = field_value
-			if field_name == 'title':
-				results_string += '{}{} : {} ({:.2f}% match)'.format(padding, field_name, field_value, similarity*100)
-			else:
-				results_string += '{}{} : {}'.format(padding, field_name, field_value)
-			if i < len(field_names) - 1:
-				results_string += '\n'
-		results_dict['similarity'] = similarity
-		if similarity > 0.9:
-			if result.identifiers is not None and 'doi' in result.identifiers:
-				doi = result.identifiers['doi']
-				bibtex = self.get_bibtex(doi)
-				if bibtex is not None:
-					results_dict['bibtex'] = bibtex
-		return results_dict
-
-	def get_authors_pretty(self, author_list):
-		if isinstance(author_list, list):
-			return ['{} {}'.format(author.first_name, author.last_name) for author in author_list]
-		else:
-			if author_list is not None:
-				return '{} {}'.format(author_list.first_name, author_list.last_name)
-			else:
-				return None
-
 	def _dictionary_keydown(self, this_particular_listbox, this_particular_word_list, e):
 		if e.char == 'a' or e.char == 's' or e.char == 'd':
 			selected_item = this_particular_listbox.selection()
@@ -908,10 +812,12 @@ class RefManager(object):
 	def check_mendeley(self):
 		if self.selected_document is not None:
 			self.update_records(self.selected_document, MENDELEY)
+			self.update_document_in_listbox()
 
 	def check_google(self):
 		if self.selected_document is not None:
 			self.update_records(self.selected_document, GOOGLE)
+			self.update_document_in_listbox()
 
 
 root = tk.Tk()
