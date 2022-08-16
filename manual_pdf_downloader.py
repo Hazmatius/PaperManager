@@ -29,17 +29,20 @@ NATURE = '//www.nature.com'
 NIH = '//www.ncbi.nlm.nih.gov'
 
 
-
 def write_pdf_to_file(website, pdf_folder, pdf_name):
-	headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:103.0) Gecko/20100101 Firefox/103.0'}
-	response = requests.get(website, headers=headers, allow_redirects=True)
-	content = response.content
-	if content[0:4].decode('utf-8') == '%PDF':
-		with open(os.path.join(pdf_folder, pdf_name), 'wb') as f:
-			f.write(content)
-		return True
-	else:
-		# print(content[0:4].decode('utf-8'))
+	try:
+		headers = {'User-Agent': 'Mozilla/5.0 (X11; Ubuntsu; Linux x86_64; rv:103.0) Gecko/20100101 Firefox/103.0'}
+		response = requests.get(website, headers=headers, allow_redirects=True)
+		content = response.content
+		if content[0:4].decode('utf-8') == '%PDF':
+			with open(os.path.join(pdf_folder, pdf_name), 'wb') as f:
+				f.write(content)
+			return True
+		else:
+			# print(content[0:4].decode('utf-8'))
+			return False
+	except Exception as e:
+		print(e)
 		return False
 
 
@@ -56,13 +59,14 @@ def select_link(event):
 	listbox.itemconfig(selection[0], bg=rgbtohex((0, 1, 0)))
 	link = listbox.get(selection)
 
-	pdf_link = pdf_link_from_website(link)
+	# pdf_link = pdf_link_from_website(link)
+	pdf_link = link
 	if pdf_link is not None:
 		open_link(pdf_link)
 
 
 def on_closing():
-	with open('/Users/raymondbaranski/GitHub/PaperManager/bad_science_links.txt', 'w') as f:
+	with open(os.path.join('/home/alex/Documents/GitHub/PaperManager/', 'bad_science_links.txt'), 'w') as f:
 		for link in bad_links:
 			f.write('{}\n'.format(link))
 	root.destroy()
@@ -178,9 +182,10 @@ def download_pdf_from_link(website):
 			return False
 
 
-downloads_folder = '/Users/raymondbaranski/Downloads'
-filepath = '/Users/raymondbaranski/GitHub/PaperManager/science_tabs.txt'
-pdf_folder = '/Users/raymondbaranski/GitHub/PaperManager/pdfs'
+downloads_folder = '/home/alex/Downloads'
+path = '/home/alex/Documents/GitHub/PaperManager/'
+filepath = os.path.join(path, 'science_tabs_2.txt')
+pdf_folder = os.path.join(path, 'pdfs2')
 
 with open(filepath, 'r') as f:
 	science_links = f.readlines()

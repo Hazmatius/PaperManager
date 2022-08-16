@@ -6,7 +6,8 @@ def domain_from_website(website):
 	return website.split('/')[0]
 
 
-filepath = '/Users/raymondbaranski/Desktop/onetabs.txt'
+path = '/home/alex/Documents/GitHub/PaperManager/'
+filepath = os.path.join(path, 'onetabs.txt')
 
 with open(filepath, 'r') as f:
 	lines = f.readlines()
@@ -74,10 +75,10 @@ for domain in domains.keys():
 		for website in domains[domain]:
 			other_links.append(website)
 
-with open('/Users/raymondbaranski/GitHub/PaperManager/science_tabs.txt', 'w') as f:
+with open(os.path.join(path, 'science_tabs.txt'), 'w') as f:
 	for link in science_links:
 		f.write('{}\n'.format(link))
 
-with open('/Users/raymondbaranski/GitHub/PaperManager/other_tabs.txt', 'w') as f:
+with open(os.path.join(path, 'other_tabs.txt'), 'w') as f:
 	for link in other_links:
 		f.write('{}\n'.format(link))

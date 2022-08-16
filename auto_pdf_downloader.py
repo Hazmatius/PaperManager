@@ -31,16 +31,22 @@ NIH = '//www.ncbi.nlm.nih.gov'
 
 
 def write_pdf_to_file(website, pdf_folder, pdf_name):
-	headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:103.0) Gecko/20100101 Firefox/103.0'}
-	response = requests.get(website, headers=headers, allow_redirects=True)
-	content = response.content
-	if content[0:4].decode('utf-8') == '%PDF':
-		with open(os.path.join(pdf_folder, pdf_name), 'wb') as f:
-			f.write(content)
-		return True
-	else:
-		# print(content[0:4].decode('utf-8'))
-		return False
+	if not os.path.exists(os.path.join(pdf_folder, pdf_name)):
+		try:
+			headers = {'User-Agent': 'Mozilla/5.0 (X11; Ubuntsu; Linux x86_64; rv:103.0) Gecko/20100101 Firefox/103.0'}
+			response = requests.get(website, headers=headers, allow_redirects=True, verify=False)
+			content = response.content
+			if content[0:4].decode('utf-8') == '%PDF':
+				with open(os.path.join(pdf_folder, pdf_name), 'wb') as f:
+					f.write(content)
+				return True
+			else:
+				# print(content[0:4].decode('utf-8'))
+				return False
+		except Exception as e:
+			print(e)
+			return False
+	return True
 
 
 def select_link(event):
@@ -164,9 +170,10 @@ def download_pdf_from_link(website):
 			return False
 
 
-downloads_folder = '/Users/raymondbaranski/Downloads'
-filepath = '/Users/raymondbaranski/GitHub/PaperManager/science_tabs.txt'
-pdf_folder = '/Users/raymondbaranski/GitHub/PaperManager/pdfs'
+downloads_folder = '/home/alex/Downloads'
+path = '/home/alex/Documents/GitHub/PaperManager/'
+filepath = os.path.join(path, 'science_tabs_2.txt')
+pdf_folder = os.path.join(path, 'pdfs')
 
 with open(filepath, 'r') as f:
 	science_links = f.readlines()
@@ -179,6 +186,7 @@ for link in science_links:
 	i += 1
 	print('\r{}/{}\t\t\t'.format(i, n_links), end='')
 	pdf_link = pdf_link_from_website(link)
+	# print(pdf_link)
 	if pdf_link is not None:
 		if not download_pdf_from_link(pdf_link):
 			bad_links.append(link)
@@ -186,7 +194,7 @@ for link in science_links:
 		bad_links.append(link)
 print('\nDone')
 
-with open('/Users/raymondbaranski/GitHub/PaperManager/science_tabs_2.txt', 'w') as f:
+with open(os.path.join(path, 'science_tabs_3.txt'), 'w') as f:
 	for link in bad_links:
 		f.write('{}\n'.format(link))
 
