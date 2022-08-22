@@ -30,6 +30,7 @@ from multiprocessing import Process, Queue
 from crossref.restful import Works
 import webbrowser
 import textwrap
+import latex_to_unicode
 
 
 NO_STATUS = 'no_status'  # we haven't requested records yet [gray circle]
@@ -54,10 +55,46 @@ PDFPLUMBER = 'pdfplumber'
 TEXTRACT = 'textract'
 
 
+def load_bibtex_from_file(filepath):
+	bibtexs = list()
+	with open(filepath, 'r') as f:
+		lines = f.readlines()
+	for line in lines:
+		if line.startswith('\n') or line == '\n' or line == '':
+			pass
+		elif line.startswith('@'):
+			bibtexs.append([line])
+		else:
+			bibtexs[-1].append(line)
+	for bibtex in bibtexs:
+		bibtex[-1].replace('\n', '')
+	bibtexs = [''.join(bibtex).strip() for bibtex in bibtexs]
+	# for bibtex in bibtexs:
+	# 	print('<{}>'.format(bibtex))
+	bibtexs_dict = dict()
+	for bibtex in bibtexs:
+		bib_name = bib_name_from_bibtex(bibtex)
+		bibtexs_dict[bib_name] = bibtex
+	return bibtexs_dict
+
+
+def bib_name_from_bibtex(bibtex):
+	return bibtex.split('\n')[0].replace(',', '').split('{')[1]
+
+
 def write_to_clipboard(output):
 	process = subprocess.Popen(
 		'pbcopy', env={'LANG': 'en_US.UTF-8'}, stdin=subprocess.PIPE)
 	process.communicate(output.encode('utf-8'))
+
+
+def clean_author_string(auth):
+	if ', ' in auth:
+		items = auth.split(', ')
+		auth = items[1] + ' ' + items[0]
+		return auth
+	else:
+		return auth
 
 
 def organize_raw_text(raw_text, line_width):
@@ -71,18 +108,26 @@ def parse_word_search(word_search, srch):
 	# we need to write... an actual parser! Oh no!
 	# wait... can't we just, like, us eval to create a conditional? This could be TERRIBLE though.
 	# basically, what we would do is this:
+
 	word_search = word_search.lower()
+	score_string = word_search
 	terms = re.findall(r'[^~()\+\*]*', word_search)
 	terms = list(set([term for term in terms if term != '']))
 	redict = dict()
+	scdict = dict()
 	for term in terms:
 		redict[term] = '(\'{}\' in {})'.format(term, srch)
+		if srch == 'doc.raw_text':
+			scdict[term] = '(doc.raw_text.count(\'{}\')/len(doc.raw_text))'.format(term)
 	for term in terms:
 		word_search = re.sub(r'\b'+term+r'\b', redict[term], word_search)
+		if srch == 'doc.raw_text':
+			score_string = re.sub(r'\b'+term+r'\b', scdict[term], score_string)
 		# word_search = word_search.replace(term, redict[term])
 	word_search = word_search.replace('+', ' or ').replace('*', ' and ').replace('~', 'not ')
+	score_string = score_string.replace('~', '1-')
 
-	def func(doc):
+	def filter_func(doc):
 		try:
 			result = eval(word_search)
 			return result
@@ -90,7 +135,17 @@ def parse_word_search(word_search, srch):
 			print(e)
 			return False
 
-	return func
+	def score_func(doc):
+		try:
+			result = eval(score_string)
+			return result
+		except Exception as e:
+			print(e)
+			return 0
+
+	print(score_string)
+
+	return filter_func, score_func
 
 
 def rgbtohex(color):
@@ -125,6 +180,8 @@ def title_from_bibtex(bib_dict):
 	title = title.replace(r'\textquotedblright', '"')
 	title = title.replace(r'\textendash', '-')
 	title = title.replace(r'\textquotesingle', '\'')
+	converter = latex_to_unicode.AccentConverter()
+	title = converter.decode_Tex_Accents(title)
 	return title
 
 
@@ -227,7 +284,7 @@ class Document(object):
 		return ', '.join([tag.tagword for tag in self.tags])
 
 	def calc_safe_filename(self):
-		return sanitize_filename(self.title.replace(':', '-').replace('.', '-')) + '.pdf'
+		return sanitize_filename(self.title.replace(':', '--').replace('.', '-').replace('/', '_')) + '.pdf'
 
 	def check_if_filename_available(self, filename):
 		return not os.path.exists(os.path.join(self.folder, filename))
@@ -338,6 +395,23 @@ class Document(object):
 			if res not in self.records:
 				self.records.append(res)
 
+	def get_authors(self):
+		if self.bibtex is not None:
+			bibtex_dict = bibtex_to_dict(self.bibtex)
+			if 'author' in bibtex_dict.keys():
+				author_string = bibtex_dict['author']
+			elif 'authors' in bibtex_dict.keys():
+				author_string = bibtex_dict['authors']
+			else:
+				return None
+			converter = latex_to_unicode.AccentConverter()
+			author_strings = author_string.split(' and ')
+			author_strings = [converter.remove_Tex_Accents(auth, 0).replace('\\', '').replace('~', ' ') for auth in author_strings]
+			author_strings = [clean_author_string(auth) for auth in author_strings]
+			self.authors = author_strings
+		else:
+			self.authors = None
+
 
 class NetScraper(object):
 	def __init__(self, refmanager):
@@ -427,17 +501,21 @@ class NetScraper(object):
 		return results
 
 	def crossref_search(self, title):
-		net_results = self.works.query(bibliographic=title)
-		results = list()
-		max_iter = 10
-		index = 0
-		for doc in net_results:
-			index += 1
-			result = self._get_crossref_record(doc, title)
-			results.append(result)
-			if index >= max_iter:
-				break
-		return results
+		try:
+			net_results = self.works.query(bibliographic=title)
+			results = list()
+			max_iter = 10
+			index = 0
+			for doc in net_results:
+				index += 1
+				result = self._get_crossref_record(doc, title)
+				results.append(result)
+				if index >= max_iter:
+					break
+			return results
+		except Exception as e:
+			print(e)
+			return list()
 
 	def _get_google_record(self, result, doc_title):
 		"""
@@ -509,7 +587,10 @@ class NetScraper(object):
 				max_sim_idx = np.argmax(sims)
 				result['title'] = result['title'][max_sim_idx]
 
-		similarity = get_similarity_score(result['title'], doc_title)
+		try:
+			similarity = get_similarity_score(result['title'], doc_title)
+		except:
+			similarity = 0
 
 		for i in range(len(field_names)):
 			field_name = field_names[i]
@@ -604,8 +685,11 @@ class NetScraper(object):
 		bulk_docs = self.get_bulk_documents()
 		documents_to_check = list()
 		for doc in bulk_docs:
-			if doc.bibtex_status not in [CONFIRMED, MATCH, NEAR_MATCH]:
-				documents_to_check.append(doc)
+			try:
+				if doc.bibtex_status not in [CONFIRMED, MATCH, NEAR_MATCH]:
+					documents_to_check.append(doc)
+			except Exception as e:
+				print(e)
 
 		# progress_var = DoubleVar()
 		progress_bar_window = tk.Toplevel()
@@ -971,6 +1055,7 @@ class FolderWatcher(object):
 
 	def check_for_new_documents(self):
 		# compose file_list
+		new_docs = list()
 		for folder in self.watched_folders:
 			# print('Looking in {}...'.format(folder))
 			pdfs = get_pdfs_in_folder(folder)
@@ -978,10 +1063,12 @@ class FolderWatcher(object):
 				if pdf not in self.refmanager.documents.keys():
 					print('found new document {}'.format(pdf))
 					new_doc = Document(pdf, self.refmanager.doc_id_counter)
+					new_docs.append(new_doc)
 					self.refmanager.doc_id_counter += 1
 					self.refmanager.documents[pdf] = new_doc
 					self.refmanager.id_to_doc[new_doc.document_id] = new_doc
-		self.refmanager.display_docs(self.refmanager.documents.values())
+		# self.refmanager.display_docs(self.refmanager.documents.values())
+		return new_docs
 
 
 class Tag(object):
@@ -1250,6 +1337,19 @@ class RefManager(object):
 	def start(self):
 		self.ui.root.mainloop()
 
+	def bulk_rename_documents(self):
+		for doc in self.documents.values():
+			if doc.bibtex_status in [MATCH, CONFIRMED]:
+				new_filename = doc.calc_safe_filename()
+				if doc.check_if_filename_available(new_filename):
+					old_filepath = doc.filepath
+					new_filepath = os.path.join(doc.folder, new_filename)
+					self.documents[new_filepath] = self.documents.pop(old_filepath)
+					doc.rename_file(new_filename)
+					doc.save(self.documents_directory)
+				else:
+					print('"{}" is already taken'.format(new_filename))
+
 	def delete_selected_document(self):
 		selected_item = self.ui.document_listbox.selection()
 		doc_id = self.ui.document_listbox.item(selected_item)['values'][0]
@@ -1358,7 +1458,7 @@ class RefManager(object):
 		duplicates = dict()
 		docs_dict = dict()
 		for doc in self.documents.values():
-			title = doc.title
+			title = clean_string(doc.title)
 			if title in docs_dict.keys():
 				if title in duplicates.keys():
 					duplicates[title].add(doc)
@@ -1419,6 +1519,36 @@ class RefManager(object):
 					self.ui.notes.insert(END, self.selected_document.notes)
 				# document = self.documents[item['values'][1]]
 				# print(document.filepath)
+
+	def cite_document(self, event):
+		if self.selected_document is not None:
+			try:
+				if self.bib_path is not None and os.path.exists(self.bib_path):
+					if self.selected_document.bibtex is not None:
+						bib_name = bib_name_from_bibtex(self.selected_document.bibtex)
+						print('Exporting "{}" as {}'.format(self.selected_document.title, bib_name))
+						write_to_clipboard(bib_name)
+						bibtexs_dict = load_bibtex_from_file(self.bib_path)
+						bibtexs_dict[bib_name] = self.selected_document.bibtex.strip()
+						with open(self.bib_path, 'w') as f:
+							f.write('\n\n'.join(bibtexs_dict.values()))
+					else:
+						print('Document doesn\'t have bibtex')
+			except Exception as e:
+				print('Could not export citation.')
+
+	def set_bib_file(self, event):
+		try:
+			bib_path = self.bib_path
+		except Exception as e:
+			self.bib_path = ''
+			bib_path = self.bib_path
+		new_bib_path = filedialog.askopenfilename(title='Bibliography File', filetypes=[('Text files', '.bib')])
+		# new_bib_path = simpledialog.askstring('Bibliography File', '.bib path', initialvalue=bib_path)
+		if new_bib_path is not None and os.path.exists(new_bib_path):
+			self.bib_path = new_bib_path
+		else:
+			print('"{}" does not exist'.format(new_bib_path))
 
 	def manual_update_document_info(self, event):
 		if self.ui.info_panel.edit_modified():
@@ -1675,11 +1805,14 @@ class RefManager(object):
 		self.ui.document_listbox.tag_configure('light', background='#aaaaaa')
 		self.ui.document_listbox.tag_configure('gray', background='#cccccc')
 
+	def find_and_display_new_docs(self):
+		new_docs = self.folder_watcher.check_for_new_documents()
+		self.display_docs(new_docs)
 
 	def search(self):
 		self.selected_document = None
 		search_text = self.ui.search_box.get('1.0', END)
-		search_text = re.sub(r"[\n\t\s]*", "", search_text)
+		search_text = re.sub(r"[\n\t]*", "", search_text)
 		if 'status:' in search_text:
 			status_opts = search_text.replace('status:', '').split(',')
 			results = list()
@@ -1689,7 +1822,7 @@ class RefManager(object):
 			self.display_docs(results)
 		elif 'words:' in search_text:
 			contains_opts = search_text.replace('words:', '')
-			check_func = parse_word_search(contains_opts, 'doc.words')
+			check_func, score_func = parse_word_search(contains_opts, 'doc.words')
 			results = list()
 			for doc in self.documents.values():
 				if check_func(doc):
@@ -1697,24 +1830,51 @@ class RefManager(object):
 			self.display_docs(results)
 		elif 'text:' in search_text:
 			contains_opts = search_text.replace('text:', '')
-			check_func = parse_word_search(contains_opts, 'doc.raw_text')
+			check_func, score_func = parse_word_search(contains_opts, 'doc.raw_text')
+			results = list()
+			for doc in self.documents.values():
+				if check_func(doc):
+					results.append(doc)
+			results = sorted(results, key=lambda x: score_func(x), reverse=True)
+			self.display_docs(results)
+		elif 'tags:' in search_text:
+			contains_opts = search_text.replace('tags:', '')
+			check_func, score_func = parse_word_search(contains_opts, '[tag.tagword.lower() for tag in doc.tags]')
 			results = list()
 			for doc in self.documents.values():
 				if check_func(doc):
 					results.append(doc)
 			self.display_docs(results)
-		elif 'tags:' in search_text:
-			contains_opts = search_text.replace('tags:', '')
-			check_func = parse_word_search(contains_opts, '[tag.tagword.lower() for tag in doc.tags]')
+		elif 'authors:' in search_text:
+			search_text = search_text.replace('authors:', '')
+			auth_items = search_text.split(', ')
+			# auth_items = [auth.split(' ') for auth in auth_items]
 			results = list()
 			for doc in self.documents.values():
-				if check_func(doc):
-					results.append(doc)
+				try:
+					if any([auth_item in ' '.join(doc.authors) for auth_item in auth_items]):
+						results.append(doc)
+				except Exception as e:
+					print(e)
+					pass
+			self.display_docs(results)
+		elif 'bibtex:' in search_text:
+			search_text = search_text.replace('bibtex:', '')
+			results = list()
+			for doc in self.documents.values():
+				if doc.bibtex is not None:
+					try:
+						bib_name = bib_name_from_bibtex(doc.bibtex)
+						if bib_name == search_text:
+							results.append(doc)
+					except Exception as e:
+						pass
 			self.display_docs(results)
 		else:
 			if search_text == '':
 				self.display_docs(self.documents.values())
 			else:
+				# print('Title search of "{}"'.format(search_text.lower()))
 				results = list()
 				for doc in self.documents.values():
 					# print(doc.title.lower())
@@ -1739,8 +1899,23 @@ class RefManager(object):
 				files_loaded = True
 				with open(os.path.join(self.documents_directory, file), 'rb') as f:
 					loaded_doc = pickle.load(f)
-					self.documents[loaded_doc.filepath] = loaded_doc
-					self.id_to_doc[loaded_doc.document_id] = loaded_doc
+					valid_file = True
+					if os.path.exists(loaded_doc.filepath):
+						self.documents[loaded_doc.filepath] = loaded_doc
+						self.id_to_doc[loaded_doc.document_id] = loaded_doc
+						loaded_doc.get_authors()
+						# if loaded_doc.bibtex_status == MATCH:
+						# 	try:
+						# 		bib_dict = bibtex_to_dict(loaded_doc.bibtex)
+						# 		title = title_from_bibtex(bib_dict)
+						# 		loaded_doc.title = title
+						# 		loaded_doc.saved = False
+						# 	except:
+						# 		pass
+					else:
+						valid_file = False
+				if not valid_file:
+					os.remove(os.path.join(self.documents_directory, file))
 		if files_loaded:
 			self.display_docs(self.documents.values())
 
@@ -1771,7 +1946,14 @@ class RefManager(object):
 	def reconstruct_tag_data(self):
 		for doc in self.documents.values():
 			tag_strings = doc.tags
-			doc.tags = set([self.tag_manager.tags[tag_string] for tag_string in tag_strings])
+			doc.tags = set()
+			for tag_string in tag_strings:
+				if tag_string in self.tag_manager.tags.keys():
+					doc.tags.add(self.tag_manager.tags[tag_string])
+				else:
+					self.tag_manager._add_tag(tag_string)
+					doc.tags.add(self.tag_manager.tags[tag_string])
+			# doc.tags = set([self.tag_manager.tags[tag_string] for tag_string in tag_strings])
 
 	def save_metadata(self):
 		json_data = {
@@ -1805,9 +1987,12 @@ class RefManager(object):
 			if self.selected_document.check_if_filename_available(new_filename):
 				old_filepath = self.selected_document.filepath
 				new_filepath = os.path.join(self.selected_document.folder, new_filename)
-				self.documents[new_filepath] = self.documents.pop(old_filepath)
-				self.selected_document.rename_file(new_filename)
-				self.selected_document.save(self.documents_directory)
+				if new_filepath == old_filepath:
+					pass
+				else:
+					self.documents[new_filepath] = self.documents.pop(old_filepath)
+					self.selected_document.rename_file(new_filename)
+					self.selected_document.save(self.documents_directory)
 			else:
 				print('"{}" is already taken'.format(new_filename))
 
@@ -1887,6 +2072,10 @@ class UIManager(object):
 		self.open_pdf_button.pack(side=LEFT)
 		self.open_text_button = Button(self.open_frame, text='Open Text', command=self.ref_manager.open_text_interface)
 		self.open_text_button.pack(side=LEFT)
+		self.cite_document_button = Button(self.open_frame, text='Cite')
+		self.cite_document_button.pack(side=LEFT)
+		self.cite_document_button.bind('<Button-1>', self.ref_manager.cite_document)
+		self.cite_document_button.bind('<Button-2>', self.ref_manager.set_bib_file)
 
 		self.tags_panel = Text(self.sidebar, relief=GROOVE, borderwidth=2, width=40, height=4, wrap=WORD)
 		self.tags_panel.pack(side=TOP, expand=TRUE)
@@ -1946,6 +2135,9 @@ class UIManager(object):
 		self.folder_manager_button = Button(text='Folders', command=self.ref_manager.folder_watcher.open_folder_window)
 		self.folder_manager_button.pack(in_=self.bottom_frame, fill=Y, ipady=5, ipadx=5, side=LEFT)
 
+		self.find_new_button = Button(text='Find New', command=self.ref_manager.find_and_display_new_docs)
+		self.find_new_button.pack(in_=self.bottom_frame, fill=Y, ipady=5, ipadx=5, side=LEFT)
+
 		self.save_button = Button(text='Save', command=self.ref_manager.save_data)
 		self.save_button.pack(in_=self.bottom_frame, fill=Y, ipady=5, ipadx=5, side=LEFT)
 
@@ -1964,6 +2156,13 @@ class UIManager(object):
 		self.bulk_scrape_button = Button(text='Bulk Scrape', command=self.ref_manager.netscraper.bulk_scrape_interface)
 		self.bulk_scrape_button.pack(in_=self.bottom_frame, fill=Y, ipady=5, ipadx=5, side=RIGHT)
 
+		self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+	def on_closing(self):
+		self.ref_manager.save_metadata()
+		self.ref_manager.save_data()
+		self.root.destroy()
+
 # ref_manager = RefManager()
 
 
@@ -1980,6 +2179,7 @@ if __name__ == '__main__':
 	ref_manager = RefManager()
 	ref_manager.load_data()
 	ref_manager.folder_watcher.check_for_new_documents()
+	ref_manager.display_docs(ref_manager.documents.values())
 	# ref_manager.dictionary.parallel_calculate_dictionary()
 	# ref_manager.dictionary.get_full_word_information()
 	ref_manager.start()
